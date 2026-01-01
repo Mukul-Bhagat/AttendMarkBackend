@@ -17,6 +17,8 @@ router.post(
     check('userLocation.longitude', 'User longitude is required').isFloat({ min: -180, max: 180 }),
     check('deviceId', 'Device ID is required').not().isEmpty().trim(),
     check('userAgent', 'User Agent is required').not().isEmpty().trim(),
+    check('accuracy', 'GPS accuracy is required').optional().isFloat({ min: 0, max: 1000 }),
+    check('timestamp', 'Timestamp is required').optional().isISO8601(),
   ],
   markAttendance
 );
