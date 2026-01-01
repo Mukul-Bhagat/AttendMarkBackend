@@ -121,7 +121,7 @@ export const reverseGeocode = async (
     const response = await axios.get<ReverseGeocodeResponse>(url, {
       params,
       timeout: 10000, // 10 second timeout
-      validateStatus: (status) => status < 500, // Don't throw on 4xx, handle manually
+      validateStatus: (status: number) => status < 500, // Don't throw on 4xx, handle manually
     });
 
     if (response.data.responseCode !== 200) {
@@ -254,7 +254,7 @@ export const checkGeofence = async (
     const response = await axios.get<GeofenceResponse>(url, {
       params,
       timeout: 10000,
-      validateStatus: (status) => status < 500, // Don't throw on 4xx, handle manually
+      validateStatus: (status: number) => status < 500, // Don't throw on 4xx, handle manually
     });
 
     if (response.data.responseCode !== 200) {

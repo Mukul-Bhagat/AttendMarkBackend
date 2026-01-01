@@ -370,7 +370,8 @@ export const markAttendance = async (req: Request, res: Response) => {
     let rejectionReason: string | undefined = undefined;
 
     // STRUCTURED LOGGING: Log every attendance attempt for audit trail
-    const verificationLog = {
+    // Using Record<string, any> to allow dynamic properties for logging
+    const verificationLog: Record<string, any> = {
       userId,
       sessionId,
       requiresLocation: isLocationRequired,
