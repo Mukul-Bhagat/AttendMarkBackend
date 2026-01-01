@@ -25,15 +25,7 @@ export interface ISession extends Document {
     latitude: number;
     longitude: number;
   }; // Legacy field, kept for backward compatibility
-  radius?: number; // Radius in meters for geolocation check (DEPRECATED: Use geofence instead)
-  // MapmyIndia geofence polygon (GeoJSON Polygon format)
-  geofence?: {
-    type: "Polygon";
-    coordinates: number[][][]; // [[[lng, lat], [lng, lat], ...]]
-  };
-  // Location metadata for city/state validation
-  city?: string;
-  state?: string;
+  radius?: number; // Radius in meters for geolocation check (default: 100m)
   assignedUsers: Array<{
     userId: string;
     email: string;
@@ -117,26 +109,8 @@ const SessionSchema: Schema = new Schema({
     longitude: { type: Number },
   }, // Legacy field, kept for backward compatibility
   radius: {
-    type: Number, // Radius in meters (DEPRECATED: Use geofence instead)
+    type: Number, // Radius in meters
     default: 100, // Default 100 meters
-  },
-  // MapmyIndia geofence polygon (GeoJSON Polygon format)
-  geofence: {
-    type: {
-      type: String,
-      enum: ['Polygon'],
-      default: 'Polygon',
-    },
-    coordinates: {
-      type: [[[Number]]], // [[[lng, lat], [lng, lat], ...]]
-    },
-  },
-  // Location metadata for city/state validation
-  city: {
-    type: String,
-  },
-  state: {
-    type: String,
   },
   assignedUsers: [{
     userId: {

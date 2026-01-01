@@ -1,21 +1,21 @@
 import { Request, Response } from 'express';
 import { validationResult } from 'express-validator';
 import mongoose from 'mongoose';
+import { getDistance } from 'geolib';
 import createSessionModel from '../models/Session';
 import createAttendanceModel from '../models/Attendance';
 import createUserModel from '../models/User';
 import createOrganizationSettingsModel from '../models/OrganizationSettings';
 import createLeaveRequestModel from '../models/LeaveRequest';
 import AuditLog from '../models/AuditLog';
-import { verifyLocation, LocationVerificationResult } from '../services/mapmyindiaService';
 
 /**
  * SECURITY GUARANTEE:
  * 
- * Attendance can ONLY be marked if MapmyIndia verification passes.
+ * Attendance can ONLY be marked if location verification passes.
  * There is NO fallback or override path.
  * 
- * Location verification is a HARD GATE:
+ * Location verification uses browser GPS + geolib distance calculation:
  * - PHYSICAL sessions: Location verification REQUIRED
  * - HYBRID sessions with PHYSICAL assignment: Location verification REQUIRED
  * - REMOTE sessions/users: Location verification NOT required
@@ -23,10 +23,7 @@ import { verifyLocation, LocationVerificationResult } from '../services/mapmyind
  * If location is required and verification fails, attendance is REJECTED.
  * No attendance record is created with locationVerified=false when location is required.
  * 
- * All MapmyIndia API failures result in attendance rejection.
  * All validation failures result in attendance rejection.
- * 
- * See: backend/src/controllers/SECURITY_GUARANTEE.md for full documentation.
  */
 // @route   POST /api/attendance/scan
 export const markAttendance = async (req: Request, res: Response) => {
@@ -92,7 +89,7 @@ export const markAttendance = async (req: Request, res: Response) => {
     });
   }
 
-  // SECURITY: GPS accuracy is REQUIRED for MapmyIndia verification - NO DEFAULTS, NO BYPASS
+  // SECURITY: GPS accuracy is REQUIRED for location verification - NO DEFAULTS, NO BYPASS
   if (typeof accuracy !== 'number' || isNaN(accuracy) || accuracy === undefined || accuracy === null) {
     console.log('[ATTENDANCE_SCAN] REJECTED: Missing GPS accuracy');
     return res.status(400).json({ 
@@ -101,9 +98,9 @@ export const markAttendance = async (req: Request, res: Response) => {
     });
   }
 
-  const accuracyRadius = accuracy;
-  if (accuracyRadius <= 0 || accuracyRadius > 1000) {
-    console.log('[ATTENDANCE_SCAN] REJECTED: Invalid accuracy radius:', accuracyRadius);
+  const accuracyMeters = accuracy;
+  if (accuracyMeters <= 0 || accuracyMeters > 1000) {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Invalid accuracy:', accuracyMeters);
     return res.status(400).json({ 
       msg: 'Invalid GPS accuracy data. Please enable high-accuracy GPS and try again.',
       reason: 'INVALID_ACCURACY'
@@ -336,7 +333,7 @@ export const markAttendance = async (req: Request, res: Response) => {
     }
     // If timeDifferenceMinutes <= 0, attendance is on time (isLate remains false)
 
-    // 9. *** MAPMYINDIA LOCATION VERIFICATION (AUTHORITATIVE) ***
+    // 9. *** LOCATION VERIFICATION (GPS + GEOLIB) ***
     // SECURITY: Location verification is a HARD GATE - no bypasses, no fallbacks
     // Find the user's specific assignment for this session
     const assignment = session.assignedUsers.find(
@@ -363,152 +360,145 @@ export const markAttendance = async (req: Request, res: Response) => {
     }
     // If sessionType === 'REMOTE', isLocationRequired remains false
 
-    // SECURITY: Perform MapmyIndia location verification (if required)
+    // SECURITY: Perform location verification (if required)
     // CRITICAL: This is a HARD GATE - no attendance can be marked if verification fails
-    let locationVerificationResult: LocationVerificationResult | null = null;
     let locationVerified = false;
-    let rejectionReason: string | undefined = undefined;
+    let distanceFromSession: number | undefined = undefined;
 
-    // STRUCTURED LOGGING: Log every attendance attempt for audit trail
-    // Using Record<string, any> to allow dynamic properties for logging
+    // STRUCTURED LOGGING: Log location verification attempt
     const verificationLog: Record<string, any> = {
       userId,
       sessionId,
       requiresLocation: isLocationRequired,
-      latitude: userLocation.latitude,
-      longitude: userLocation.longitude,
-      accuracyRadius,
-      sessionCity: session.city || null,
-      sessionState: session.state || null,
-      hasGeofence: !!session.geofence,
-      timestamp: new Date().toISOString()
+      userLatitude: userLocation.latitude,
+      userLongitude: userLocation.longitude,
+      accuracy: accuracyMeters,
+      timestamp: new Date().toISOString(),
+      deviceId: deviceId.substring(0, 8) + '...', // Partial for privacy
     };
 
     if (isLocationRequired) {
-      // SECURITY ASSERTION: If location is required, we MUST have valid location data
+      // SECURITY: Validate location data is present
       if (!userLocation || typeof userLocation.latitude !== 'number' || typeof userLocation.longitude !== 'number') {
-        console.error('[ATTENDANCE_SCAN] FATAL ASSERTION FAILED: Location required but data missing');
-        verificationLog['FINAL_DECISION'] = 'REJECT';
-        verificationLog['REJECTION_REASON'] = 'ASSERTION_FAILED_MISSING_LOCATION_DATA';
-        console.log('[ATTENDANCE_VERIFICATION_LOG]', verificationLog);
-        throw new Error('FATAL: Location data missing when location verification is required');
+        console.error('[ATTENDANCE_SCAN] REJECTED: Location required but data missing');
+        return res.status(400).json({
+          msg: 'Location data is required. Please enable GPS and try again.',
+          reason: 'LOCATION_REQUIRED'
+        });
       }
 
-      try {
-        console.log('[ATTENDANCE_SCAN] Starting MapmyIndia location verification:', verificationLog);
-
-        // Call MapmyIndia verification service
-        // This performs: accuracy check, reverse geocode, confidence validation, city match, geofence check
-        // SECURITY: verifyLocation() throws on ANY failure - this is a HARD REJECTION
-        locationVerificationResult = await verifyLocation(
-          userLocation.latitude,
-          userLocation.longitude,
-          accuracyRadius,
-          session.city,
-          session.state,
-          session.geofence?.coordinates
-        );
-
-        // SECURITY ASSERTION: If verifyLocation returns, it MUST be valid (it throws on failure)
-        if (!locationVerificationResult || !locationVerificationResult.isValid) {
-          console.error('[ATTENDANCE_SCAN] FATAL ASSERTION FAILED: verifyLocation returned invalid result');
-          verificationLog['FINAL_DECISION'] = 'REJECT';
-          verificationLog['REJECTION_REASON'] = 'ASSERTION_FAILED_INVALID_VERIFICATION_RESULT';
-          console.log('[ATTENDANCE_VERIFICATION_LOG]', verificationLog);
-          throw new Error('FATAL: Location verification returned invalid result');
-        }
-
-        // SECURITY ASSERTION: Required verification data MUST be present
-        if (typeof locationVerificationResult.confidenceScore !== 'number' || 
-            typeof locationVerificationResult.accuracyRadius !== 'number' ||
-            !locationVerificationResult.reverseGeocode) {
-          console.error('[ATTENDANCE_SCAN] FATAL ASSERTION FAILED: Missing required verification data');
-          verificationLog['FINAL_DECISION'] = 'REJECT';
-          verificationLog['REJECTION_REASON'] = 'ASSERTION_FAILED_MISSING_VERIFICATION_DATA';
-          console.log('[ATTENDANCE_VERIFICATION_LOG]', verificationLog);
-          throw new Error('FATAL: Required verification data missing');
-        }
-
-        // Verification passed - mark as verified
-        locationVerified = true;
-        
-        // Complete verification log
-        verificationLog['FINAL_DECISION'] = 'ALLOW';
-        verificationLog['confidenceScore'] = locationVerificationResult.confidenceScore;
-        verificationLog['cityFromMapmyIndia'] = locationVerificationResult.reverseGeocode.city;
-        verificationLog['stateFromMapmyIndia'] = locationVerificationResult.reverseGeocode.state;
-        verificationLog['geofenceResult'] = locationVerificationResult.geofenceResult ? {
-          isInside: locationVerificationResult.geofenceResult.isInside,
-          distance: locationVerificationResult.geofenceResult.distance
-        } : null;
-
-        console.log('[ATTENDANCE_SCAN] MapmyIndia verification PASSED:', {
-          confidenceScore: locationVerificationResult.confidenceScore,
-          city: locationVerificationResult.reverseGeocode.city,
-          hasGeofence: !!locationVerificationResult.geofenceResult
+      // SECURITY: Reject if coordinates are (0,0) - common default/error value
+      if (userLocation.latitude === 0 && userLocation.longitude === 0) {
+        console.error('[ATTENDANCE_SCAN] REJECTED: Location is (0,0) - invalid coordinates');
+        return res.status(400).json({
+          msg: 'Invalid location detected. Please ensure GPS is enabled and try again.',
+          reason: 'INVALID_COORDINATES'
         });
-        console.log('[ATTENDANCE_VERIFICATION_LOG]', verificationLog);
+      }
 
-      } catch (error: any) {
-        // SECURITY: MapmyIndia service throws errors on validation failure - these are HARD REJECTIONS
-        // This includes: API failures, timeouts, network errors, validation failures
-        rejectionReason = error.message || 'MAPMYINDIA_VERIFICATION_FAILED';
-        
-        verificationLog['FINAL_DECISION'] = 'REJECT';
-        verificationLog['REJECTION_REASON'] = rejectionReason;
-        verificationLog['error'] = error.message;
-        
-        console.error('[ATTENDANCE_SCAN] MapmyIndia verification REJECTED:', {
-          error: error.message,
-          sessionId,
-          userId,
-          userLocation: { lat: userLocation.latitude, lng: userLocation.longitude },
-          errorType: error.response ? 'API_ERROR' : error.request ? 'NETWORK_ERROR' : 'VALIDATION_ERROR'
-        });
-        console.log('[ATTENDANCE_VERIFICATION_LOG]', verificationLog);
-        
-        // HARD REJECTION: No attendance can be marked
+      // SECURITY: Reject if GPS accuracy is too low (> 40 meters)
+      if (accuracyMeters > 40) {
+        console.error('[ATTENDANCE_SCAN] REJECTED: GPS accuracy too low:', accuracyMeters, 'm (max: 40m)');
         return res.status(403).json({
-          msg: error.message || 'Unable to verify location at this time. Attendance not marked.',
-          reason: 'MAPMYINDIA_VERIFICATION_FAILED'
+          msg: `GPS accuracy is too low (${Math.round(accuracyMeters)}m). Please enable high-accuracy GPS and ensure you have a clear view of the sky. Maximum allowed accuracy: 40m.`,
+          reason: 'ACCURACY_TOO_LOW',
+          accuracy: accuracyMeters,
+          maxAllowed: 40
         });
       }
+
+      // SECURITY: For location-required sessions, we MUST have session coordinates to verify distance
+      // LINK type sessions without coordinates CANNOT verify location - REJECT attendance
+      let sessionLocation: { latitude: number; longitude: number } | null = null;
+      
+      // Check new location structure first, then fall back to legacy geolocation
+      if (session.location) {
+        if (session.location.type === 'COORDS' && session.location.geolocation) {
+          sessionLocation = {
+            latitude: session.location.geolocation.latitude,
+            longitude: session.location.geolocation.longitude,
+          };
+        }
+        // SECURITY FIX: LINK type sessions MUST have coordinates to verify location
+        // If session is LINK type but has no coordinates, we cannot verify location - REJECT
+        // DO NOT bypass distance validation for LINK type sessions
+      } else if (session.geolocation && session.geolocation.latitude && session.geolocation.longitude) {
+        // Legacy support: use old geolocation field
+        sessionLocation = {
+          latitude: session.geolocation.latitude,
+          longitude: session.geolocation.longitude,
+        };
+      }
+
+      // SECURITY: If location is required, session MUST have coordinates for distance validation
+      if (!sessionLocation) {
+        console.error('[ATTENDANCE_SCAN] REJECTED: Session location coordinates not configured - cannot verify distance');
+        return res.status(400).json({
+          msg: 'Session location coordinates are not configured. Distance validation cannot be performed. Please contact the administrator.',
+          reason: 'SESSION_LOCATION_NOT_CONFIGURED'
+        });
+      }
+
+      // SECURITY: Distance validation is MANDATORY for all location-required sessions
+      // Calculate distance using geolib
+      distanceFromSession = getDistance(
+        { latitude: userLocation.latitude, longitude: userLocation.longitude },
+        { latitude: sessionLocation.latitude, longitude: sessionLocation.longitude }
+      );
+
+      const allowedRadius = session.radius || 100; // Default to 100 meters if not set
+
+      // Explicit logging for audit trail
+      console.log('[ATTENDANCE_SCAN] Distance validation:', {
+        userLocation: { lat: userLocation.latitude, lng: userLocation.longitude },
+        sessionLocation: { lat: sessionLocation.latitude, lng: sessionLocation.longitude },
+        distance: distanceFromSession,
+        allowedRadius,
+        withinRadius: distanceFromSession <= allowedRadius,
+        accuracy: accuracyMeters
+      });
+
+      // SECURITY: Reject if distance exceeds allowed radius
+      if (distanceFromSession > allowedRadius) {
+        console.error('[ATTENDANCE_SCAN] REJECTED: Location too far - distance:', distanceFromSession, 'm, radius:', allowedRadius, 'm');
+        return res.status(403).json({
+          msg: `You are not at the correct location. You are ${Math.round(distanceFromSession)}m away; please verify you are at the correct place as per the session.`,
+          reason: 'LOCATION_TOO_FAR',
+          distance: distanceFromSession,
+          requiredRadius: allowedRadius
+        });
+      }
+
+      // SECURITY: Only set locationVerified=true if distance check passes
+      locationVerified = true;
+      verificationLog['sessionLatitude'] = sessionLocation.latitude;
+      verificationLog['sessionLongitude'] = sessionLocation.longitude;
+      verificationLog['distanceFromSession'] = distanceFromSession;
+      verificationLog['allowedRadius'] = allowedRadius;
+      verificationLog['FINAL_DECISION'] = 'ALLOW';
+      console.log('[ATTENDANCE_SCAN] Location verification PASSED:', {
+        distance: distanceFromSession,
+        allowedRadius,
+        accuracy: accuracyMeters
+      });
     } else {
       // For REMOTE users or REMOTE sessions, location verification is not required
-      // But we still ensure location data was sent (already validated above)
       locationVerified = true; // Mark as verified since it's not required
-      
       verificationLog['FINAL_DECISION'] = 'ALLOW';
       verificationLog['REJECTION_REASON'] = 'LOCATION_NOT_REQUIRED';
       console.log('[ATTENDANCE_SCAN] Location verification skipped - REMOTE session/user');
-      console.log('[ATTENDANCE_VERIFICATION_LOG]', verificationLog);
     }
 
-    // SECURITY ASSERTION: Final check - attendance CANNOT be marked if location verification failed
-    // This is a defensive assertion - should never be false at this point if code is correct
+    // Log complete verification attempt for audit trail
+    verificationLog['locationVerified'] = locationVerified;
+    console.log('[ATTENDANCE_VERIFICATION_LOG]', verificationLog);
+
+    // SECURITY ASSERTION #1: Final check - attendance CANNOT be marked if location verification failed
     if (isLocationRequired && !locationVerified) {
-      console.error('[ATTENDANCE_SCAN] FATAL ASSERTION FAILED: Location verification failed but flow continued');
-      verificationLog['FINAL_DECISION'] = 'REJECT';
-      verificationLog['REJECTION_REASON'] = 'ASSERTION_FAILED_LOCATION_NOT_VERIFIED';
-      console.log('[ATTENDANCE_VERIFICATION_LOG]', verificationLog);
-      
-      // This should never happen, but if it does, we MUST reject
+      console.error('[ATTENDANCE_SCAN] FATAL ASSERTION FAILED: Location required but verification failed');
       return res.status(403).json({
         msg: 'Location verification failed. Attendance cannot be marked.',
         reason: 'LOCATION_VERIFICATION_FAILED'
-      });
-    }
-
-    // SECURITY ASSERTION: If location was required and verified, verification result MUST exist
-    if (isLocationRequired && !locationVerificationResult) {
-      console.error('[ATTENDANCE_SCAN] FATAL ASSERTION FAILED: Location required but verification result missing');
-      verificationLog['FINAL_DECISION'] = 'REJECT';
-      verificationLog['REJECTION_REASON'] = 'ASSERTION_FAILED_MISSING_VERIFICATION_RESULT';
-      console.log('[ATTENDANCE_VERIFICATION_LOG]', verificationLog);
-      
-      return res.status(403).json({
-        msg: 'Location verification data missing. Attendance cannot be marked.',
-        reason: 'MISSING_VERIFICATION_RESULT'
       });
     }
 
@@ -547,47 +537,24 @@ export const markAttendance = async (req: Request, res: Response) => {
     // IF Both Match: Allow Attendance (check passes, continue to create attendance record)
 
     // 11. ALL CHECKS PASSED: CREATE ATTENDANCE RECORD
-    // SECURITY: Final assertion before creating attendance record
-    // CRITICAL: Attendance can ONLY be marked if:
-    // 1. Location is not required, OR
-    // 2. Location is required AND locationVerified === true AND locationVerificationResult exists
-    
-    if (isLocationRequired) {
-      // SECURITY ASSERTION: Triple-check before creating attendance
-      if (!locationVerified) {
-        console.error('[ATTENDANCE_SCAN] FATAL ASSERTION: Attempted to create attendance with locationVerified=false');
-        return res.status(403).json({
-          msg: 'Location verification failed. Attendance cannot be marked.',
-          reason: 'LOCATION_NOT_VERIFIED'
-        });
-      }
-      
-      if (!locationVerificationResult) {
-        console.error('[ATTENDANCE_SCAN] FATAL ASSERTION: Location required but verification result missing');
-        return res.status(403).json({
-          msg: 'Location verification data missing. Attendance cannot be marked.',
-          reason: 'MISSING_VERIFICATION_RESULT'
-        });
-      }
-      
-      if (!locationVerificationResult.isValid) {
-        console.error('[ATTENDANCE_SCAN] FATAL ASSERTION: Verification result is invalid');
-        return res.status(403).json({
-          msg: 'Location verification failed. Attendance cannot be marked.',
-          reason: 'INVALID_VERIFICATION_RESULT'
-        });
-      }
-      
-      // SECURITY ASSERTION: Required verification fields MUST be present
-      if (typeof locationVerificationResult.confidenceScore !== 'number' ||
-          typeof locationVerificationResult.accuracyRadius !== 'number' ||
-          !locationVerificationResult.reverseGeocode) {
-        console.error('[ATTENDANCE_SCAN] FATAL ASSERTION: Missing required verification fields');
-        return res.status(403).json({
-          msg: 'Location verification data incomplete. Attendance cannot be marked.',
-          reason: 'INCOMPLETE_VERIFICATION_DATA'
-        });
-      }
+    // SECURITY ASSERTION #2: Final safety check before saving attendance
+    // This is a redundant but critical assertion to prevent any bypass
+    if (isLocationRequired && !locationVerified) {
+      console.error('[ATTENDANCE_SCAN] FATAL ASSERTION #2 FAILED: Attempted to create attendance with locationVerified=false when location is required');
+      return res.status(403).json({
+        msg: 'Location verification failed. Attendance cannot be marked.',
+        reason: 'LOCATION_VERIFICATION_FAILED_ASSERTION'
+      });
+    }
+
+    // SECURITY ASSERTION #3: Ensure locationVerified is explicitly true if location was required
+    // This prevents any edge case where locationVerified might be undefined or false
+    if (isLocationRequired && locationVerified !== true) {
+      console.error('[ATTENDANCE_SCAN] FATAL ASSERTION #3 FAILED: locationVerified is not explicitly true:', locationVerified);
+      return res.status(403).json({
+        msg: 'Location verification state is invalid. Attendance cannot be marked.',
+        reason: 'LOCATION_VERIFICATION_STATE_INVALID'
+      });
     }
 
     console.log('[ATTENDANCE_SCAN] All checks passed - creating attendance record:', {
@@ -596,41 +563,28 @@ export const markAttendance = async (req: Request, res: Response) => {
       locationVerified,
       isLate,
       lateByMinutes,
-      confidenceScore: locationVerificationResult?.confidenceScore,
-      accuracyRadius: accuracyRadius,
+      accuracy: accuracyMeters,
+      distanceFromSession,
       checkInTime: nowUTC.toISOString()
     });
 
-    // Build attendance record with MapmyIndia verification data
-    // SECURITY: locationVerified MUST be true if location was required (enforced by assertions above)
+    // Build attendance record
+    // SECURITY: locationVerified MUST be true if location was required (enforced above)
     const attendanceData: any = {
       userId,
       sessionId,
       userLocation,
-      locationVerified, // MUST be true if location was required (asserted above)
+      locationVerified, // MUST be true if location was required
       isLate, // Mark if attendance was late
       lateByMinutes, // Number of minutes late (if applicable)
       deviceId, // Log the device used for this scan
       checkInTime: nowUTC, // Store in UTC (standard practice)
+      accuracy: accuracyMeters, // GPS accuracy in meters
     };
 
-    // Store MapmyIndia verification data for audit trail (if verification was performed)
-    // SECURITY ASSERTION: If location was required, this data MUST exist
-    if (isLocationRequired && locationVerificationResult) {
-      attendanceData.reverseGeocodeSnapshot = locationVerificationResult.reverseGeocode;
-      attendanceData.confidenceScore = locationVerificationResult.confidenceScore;
-      attendanceData.accuracyRadius = locationVerificationResult.accuracyRadius;
-      
-      // Final assertion: All required fields must be present
-      if (!attendanceData.reverseGeocodeSnapshot || 
-          typeof attendanceData.confidenceScore !== 'number' ||
-          typeof attendanceData.accuracyRadius !== 'number') {
-        console.error('[ATTENDANCE_SCAN] FATAL ASSERTION: Verification data incomplete in attendance record');
-        return res.status(500).json({
-          msg: 'Internal error: Verification data incomplete.',
-          reason: 'INTERNAL_ERROR'
-        });
-      }
+    // Store distance from session if calculated
+    if (distanceFromSession !== undefined) {
+      attendanceData.distanceFromSession = distanceFromSession;
     }
 
     const newAttendance = new AttendanceCollection(attendanceData);

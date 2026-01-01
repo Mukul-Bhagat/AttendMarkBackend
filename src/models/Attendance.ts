@@ -13,17 +13,8 @@ export interface IAttendance extends Document {
     longitude: number;
   };
   deviceId: string; // The device ID used for *this* scan
-  // MapmyIndia verification data (stored for audit trail)
-  reverseGeocodeSnapshot?: {
-    city: string;
-    state: string;
-    locality: string;
-    district: string;
-    pincode: string;
-    fullAddress: string;
-  };
-  confidenceScore?: number; // MapmyIndia confidence score (0-1)
-  accuracyRadius?: number; // GPS accuracy radius in meters
+  accuracy?: number; // GPS accuracy in meters
+  distanceFromSession?: number; // Distance from session location in meters
 }
 
 const AttendanceSchema: Schema = new Schema({
@@ -39,17 +30,8 @@ const AttendanceSchema: Schema = new Schema({
   },
   // We log the device ID used for this specific attendance
   deviceId: { type: String, required: true },
-  // MapmyIndia verification data (stored for audit trail)
-  reverseGeocodeSnapshot: {
-    city: { type: String },
-    state: { type: String },
-    locality: { type: String },
-    district: { type: String },
-    pincode: { type: String },
-    fullAddress: { type: String },
-  },
-  confidenceScore: { type: Number }, // MapmyIndia confidence score (0-1)
-  accuracyRadius: { type: Number }, // GPS accuracy radius in meters
+  accuracy: { type: Number }, // GPS accuracy in meters
+  distanceFromSession: { type: Number }, // Distance from session location in meters
 }, { timestamps: true });
 
 // The factory function
