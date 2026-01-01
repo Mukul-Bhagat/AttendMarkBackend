@@ -20,14 +20,69 @@ export const markAttendance = async (req: Request, res: Response) => {
   const { id: userId, collectionPrefix, role } = req.user!;
   const { sessionId, userLocation, deviceId, userAgent } = req.body;
 
+  // DEBUG LOGGING: Log incoming request
+  console.log('[ATTENDANCE_SCAN] Incoming request:', {
+    userId,
+    sessionId,
+    userLocation: userLocation ? { lat: userLocation.latitude, lng: userLocation.longitude } : null,
+    hasDeviceId: !!deviceId,
+    hasUserAgent: !!userAgent,
+    scanSource: req.headers['x-scan-source'] || 'unknown',
+    timestamp: new Date().toISOString()
+  });
+
+  // STRICT VALIDATION: Reject if required fields are missing
+  if (!deviceId || typeof deviceId !== 'string' || deviceId.trim() === '') {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Missing deviceId');
+    return res.status(400).json({ 
+      msg: 'Device ID is required. Please refresh the page and try again.',
+      reason: 'MISSING_DEVICE_ID'
+    });
+  }
+
+  if (!userAgent || typeof userAgent !== 'string' || userAgent.trim() === '') {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Missing userAgent');
+    return res.status(400).json({ 
+      msg: 'User Agent is required. Please refresh the page and try again.',
+      reason: 'MISSING_USER_AGENT'
+    });
+  }
+
+  if (!userLocation || typeof userLocation !== 'object') {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Missing userLocation object');
+    return res.status(400).json({ 
+      msg: 'Location is required. Please enable GPS and try again.',
+      reason: 'MISSING_LOCATION'
+    });
+  }
+
+  if (typeof userLocation.latitude !== 'number' || typeof userLocation.longitude !== 'number') {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Invalid location coordinates');
+    return res.status(400).json({ 
+      msg: 'Invalid location coordinates. Please enable GPS and try again.',
+      reason: 'INVALID_LOCATION_COORDS'
+    });
+  }
+
+  // Reject (0,0) coordinates - common default/error value
+  if (userLocation.latitude === 0 && userLocation.longitude === 0) {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Location is (0,0) - invalid');
+    return res.status(400).json({ 
+      msg: 'Invalid location detected. Please ensure GPS is enabled and try again.',
+      reason: 'INVALID_LOCATION_ZERO'
+    });
+  }
+
   // STRICT BLOCK: Platform Owner cannot mark their own attendance
   if (role === 'PLATFORM_OWNER') {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Platform Owner attempted attendance');
     return res.status(403).json({ 
       msg: 'Forbidden: Platform Owner cannot mark their own attendance' 
     });
   }
 
   if (!mongoose.Types.ObjectId.isValid(sessionId)) {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Invalid sessionId format:', sessionId);
     return res.status(400).json({ msg: 'Invalid Session ID. Please scan a valid QR code.' });
   }
 
@@ -282,9 +337,13 @@ export const markAttendance = async (req: Request, res: Response) => {
             longitude: session.location.geolocation.longitude,
           };
         } else if (session.location.type === 'LINK') {
-          // For LINK type, we can't verify GPS coordinates, so skip geolocation check
-          // Location is still required but we can't verify it via coordinates
-          locationVerified = true;
+          // SECURITY FIX: LINK type sessions still require location validation
+          // We cannot verify GPS coordinates for LINK sessions, but we MUST still validate
+          // that location was provided and is not (0,0)
+          // Location is required but cannot be verified via distance - this is acceptable for LINK
+          // However, we still ensure location data was sent (already validated above)
+          console.log('[ATTENDANCE_SCAN] LINK type session - location provided but cannot verify distance');
+          locationVerified = true; // Accept for LINK type since we can't verify distance
         }
       } else if (session.geolocation && session.geolocation.latitude && session.geolocation.longitude) {
         // Legacy support: use old geolocation field
@@ -298,24 +357,49 @@ export const markAttendance = async (req: Request, res: Response) => {
         const distance = getDistance(userLocation, sessionLocation);
         const radius = session.radius || 100; // Default to 100 meters if not set
         
+        console.log('[ATTENDANCE_SCAN] Location check:', {
+          userLocation: { lat: userLocation.latitude, lng: userLocation.longitude },
+          sessionLocation: { lat: sessionLocation.latitude, lng: sessionLocation.longitude },
+          distance,
+          radius,
+          withinRadius: distance <= radius
+        });
+        
         if (distance <= radius) {
           locationVerified = true;
         } else {
           // Send Geolocation error first (priority)
+          console.log('[ATTENDANCE_SCAN] REJECTED: Location too far - distance:', distance, 'm, radius:', radius, 'm');
           return res.status(403).json({
             msg: `You are not at the correct location. You are ${distance}m away; please verify you are at the correct place as per the session.`,
+            reason: 'LOCATION_TOO_FAR',
+            distance,
+            requiredRadius: radius
           });
         }
-      } else if (!locationVerified) {
+      } else if (session.location?.type !== 'LINK' && !locationVerified) {
         // If we need to check location but don't have coordinates (and it's not a LINK type)
         // This should not happen for PHYSICAL/HYBRID sessions with COORDS, but handle gracefully
+        console.log('[ATTENDANCE_SCAN] REJECTED: Session location not configured');
         return res.status(400).json({
           msg: 'Session location is not configured. Please contact the administrator.',
+          reason: 'SESSION_LOCATION_NOT_CONFIGURED'
         });
       }
     } else {
       // For REMOTE users or REMOTE sessions, skip location check
+      // But still ensure location was provided (already validated above)
+      console.log('[ATTENDANCE_SCAN] REMOTE session/user - location check skipped');
       locationVerified = true;
+    }
+
+    // Final location verification check
+    if (shouldCheckLocation && !locationVerified) {
+      console.log('[ATTENDANCE_SCAN] REJECTED: Location verification failed');
+      return res.status(403).json({
+        msg: 'Location verification failed. Please ensure you are at the correct location.',
+        reason: 'LOCATION_VERIFICATION_FAILED'
+      });
     }
 
     // 10. *** ENHANCED DEVICE-LOCKING CHECK WITH USER AGENT ***
@@ -353,6 +437,15 @@ export const markAttendance = async (req: Request, res: Response) => {
     // IF Both Match: Allow Attendance (check passes, continue to create attendance record)
 
     // 11. ALL CHECKS PASSED: CREATE ATTENDANCE RECORD
+    console.log('[ATTENDANCE_SCAN] All checks passed - creating attendance record:', {
+      userId,
+      sessionId,
+      locationVerified,
+      isLate,
+      lateByMinutes,
+      checkInTime: nowUTC.toISOString()
+    });
+
     const newAttendance = new AttendanceCollection({
       userId,
       sessionId,
@@ -365,6 +458,12 @@ export const markAttendance = async (req: Request, res: Response) => {
     });
 
     await newAttendance.save();
+
+    console.log('[ATTENDANCE_SCAN] SUCCESS: Attendance marked successfully:', {
+      attendanceId: newAttendance._id,
+      userId,
+      sessionId
+    });
 
     // 12. UPDATE SESSION'S assignedUsers ARRAY TO MARK USER AS PRESENT (and LATE if applicable)
     const assignmentIndex = session.assignedUsers.findIndex(

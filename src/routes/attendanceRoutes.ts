@@ -12,11 +12,11 @@ router.post(
   '/scan',
   protect, // Must be logged in
   [
-    check('sessionId', 'Session ID is required').not().isEmpty(),
-    check('userLocation.latitude', 'User latitude is required').isNumeric(),
-    check('userLocation.longitude', 'User longitude is required').isNumeric(),
-    check('deviceId', 'Device ID is required').not().isEmpty(),
-    check('userAgent', 'User Agent is required').not().isEmpty(),
+    check('sessionId', 'Session ID is required').not().isEmpty().trim(),
+    check('userLocation.latitude', 'User latitude is required').isFloat({ min: -90, max: 90 }),
+    check('userLocation.longitude', 'User longitude is required').isFloat({ min: -180, max: 180 }),
+    check('deviceId', 'Device ID is required').not().isEmpty().trim(),
+    check('userAgent', 'User Agent is required').not().isEmpty().trim(),
   ],
   markAttendance
 );
