@@ -35,9 +35,9 @@ const seedPlatformOwner = async () => {
     
     if (existingUser) {
       console.log(`⚠️  Platform Owner with email ${PLATFORM_OWNER_EMAIL} already exists.`);
-      console.log('   Skipping seed to avoid overwriting existing account.\n');
-      await mongoose.connection.close();
-      process.exit(0);
+      console.log('   Deleting existing account to force re-seed...\n');
+      await UserCollection.deleteOne({ email: PLATFORM_OWNER_EMAIL.toLowerCase() });
+      console.log('✅ Existing account deleted. Proceeding with re-seed...\n');
     }
 
     // 5. Create the Platform Owner user

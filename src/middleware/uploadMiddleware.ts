@@ -86,3 +86,37 @@ export const uploadLeaveDocument = multer({
   fileFilter: leaveFileFilter,
 });
 
+// Configure storage for backup files - Use memory storage to avoid temp files
+const backupStorage = multer.memoryStorage();
+
+// File filter for backup files - allow .gz and .json files
+const backupFileFilter = (req: Request, file: Express.Multer.File, cb: FileFilterCallback) => {
+  const fileExt = path.extname(file.originalname).toLowerCase();
+  const allowedExtensions = ['.gz', '.json'];
+  const allowedMimeTypes = [
+    'application/gzip', 
+    'application/x-gzip', 
+    'application/x-gzip-compressed',
+    'application/json',
+    'text/json'
+  ];
+  
+  const isValidExtension = allowedExtensions.includes(fileExt);
+  const isValidMimeType = allowedMimeTypes.includes(file.mimetype) || !file.mimetype; // Some systems don't set mimetype
+
+  if (isValidExtension || isValidMimeType) {
+    cb(null, true);
+  } else {
+    cb(new Error('Only .gz (gzip) or .json backup files are allowed'));
+  }
+};
+
+// Configure multer for backup file uploads
+export const uploadBackup = multer({
+  storage: backupStorage,
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB limit for backup files
+  },
+  fileFilter: backupFileFilter,
+});
+

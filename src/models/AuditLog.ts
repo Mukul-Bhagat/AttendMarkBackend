@@ -51,6 +51,7 @@ const AuditLogSchema: Schema = new Schema({
       'CREATE_STAFF',
       'BULK_IMPORT_STAFF',
       'DELETE_STAFF',
+      'RESTORE_BACKUP',
       'OTHER',
     ],
   },

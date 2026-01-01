@@ -29,6 +29,7 @@ import reportRoutes from './routes/reportRoutes';
 import organizationRoutes from './routes/organizationRoutes';
 import leaveRoutes from './routes/leaveRoutes';
 import platformRoutes from './routes/platformRoutes';
+import backupRoutes from './routes/backupRoutes';
 import { startAttendanceScheduler } from './cron/attendanceScheduler';
 
 // Connect to database
@@ -133,6 +134,7 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/organization', organizationRoutes);
 app.use('/api/leaves', leaveRoutes);
 app.use('/api/platform', platformRoutes);
+app.use('/api/backup', backupRoutes);
 
 // Catch-all route: serve React app for all non-API routes
 // This must be AFTER all API routes to allow API calls to work

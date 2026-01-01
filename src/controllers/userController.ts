@@ -22,12 +22,17 @@ export const getOrganizationUsers = async (req: Request, res: Response) => {
 
     // 2. Determine which roles to fetch
     // Default: Exclude PLATFORM_OWNER (they must remain invisible to tenant admins)
-    // For Platform Owner: Also include COMPANY_ADMIN so they can manage them
+    // For Platform Owner: Explicitly include COMPANY_ADMIN so they can manage them
     let roleFilter: any = { role: { $ne: 'PLATFORM_OWNER' } };
     
-    // If Platform Owner is requesting, include COMPANY_ADMIN in the results
-    // (The filter already includes COMPANY_ADMIN by default since we only exclude PLATFORM_OWNER)
-    // This is just for clarity - the filter will return all roles except PLATFORM_OWNER
+    // If Platform Owner is requesting, ensure COMPANY_ADMIN is included
+    // The filter already includes COMPANY_ADMIN by default (since we only exclude PLATFORM_OWNER),
+    // but we make it explicit for clarity and to ensure it works correctly
+    if (requesterRole === 'PLATFORM_OWNER') {
+      // Platform Owner can see all roles except other PLATFORM_OWNERs
+      // This explicitly includes COMPANY_ADMIN, Manager, SessionAdmin, EndUser, etc.
+      roleFilter = { role: { $ne: 'PLATFORM_OWNER' } };
+    }
 
     // 3. Find all users in that collection
     // We only select fields the admin needs to see
@@ -827,12 +832,13 @@ export const createEndUser = async (req: Request, res: Response) => {
 
 // @route   PUT /api/users/:userId/reset-device
 // @desc    Reset a user's registered device ID and generate new password
-// @access  Private (SuperAdmin or CompanyAdmin)
+// @access  Private (SuperAdmin, CompanyAdmin, or Platform Owner)
 export const resetDevice = async (req: Request, res: Response) => {
-  const { collectionPrefix, role: requesterRole } = req.user!;
+  const { collectionPrefix, role: requesterRole, id: requesterId } = req.user!;
   const { userId } = req.params;
 
   // 1. Security Check: Allow SuperAdmin, CompanyAdmin, and Platform Owner
+  // Platform Owner has supreme authority and can reset ANY user's device, including COMPANY_ADMIN
   if (requesterRole !== 'SuperAdmin' && requesterRole !== 'CompanyAdmin' && requesterRole !== 'PLATFORM_OWNER') {
     return res.status(403).json({ msg: 'Not authorized' });
   }
@@ -848,28 +854,54 @@ export const resetDevice = async (req: Request, res: Response) => {
       return res.status(404).json({ msg: 'User not found' });
     }
 
-    // 4. Clear Security Locks: Set registeredDeviceId and registeredUserAgent to null
+    // 4. Permission Check: Determine if requester can reset this user's device
+    // Allow if:
+    // - Platform Owner (can reset anyone, including COMPANY_ADMIN)
+    // - SuperAdmin (can reset subordinates)
+    // - Company Admin resetting themselves (self-management)
+    // - Company Admin resetting subordinates (Manager, SessionAdmin, EndUser)
+    if (requesterRole === 'PLATFORM_OWNER') {
+      // Platform Owner can reset ANYONE, including COMPANY_ADMIN
+      // No additional checks needed
+    } else if (requesterRole === 'SuperAdmin') {
+      // SuperAdmin can reset subordinates (not other SuperAdmins or CompanyAdmins)
+      if (user.role === 'SuperAdmin' || user.role === 'CompanyAdmin') {
+        return res.status(403).json({ msg: 'Not authorized to reset this user\'s device' });
+      }
+    } else if (requesterRole === 'CompanyAdmin') {
+      // Company Admin can reset:
+      // 1. Themselves (self-management)
+      // 2. Subordinates (Manager, SessionAdmin, EndUser)
+      const isSelf = userId === requesterId;
+      const isSubordinate = ['Manager', 'SessionAdmin', 'EndUser'].includes(user.role);
+      
+      if (!isSelf && !isSubordinate) {
+        return res.status(403).json({ msg: 'Not authorized to reset this user\'s device' });
+      }
+    }
+
+    // 5. Clear Security Locks: Set registeredDeviceId and registeredUserAgent to null
     // Data Integrity: Only modifying these 3 fields. All other fields (Name, Email, Profile Picture, etc.) are preserved
     user.registeredDeviceId = undefined;
     user.registeredUserAgent = undefined;
 
-    // 5. Generate New Password: Create a secure 6-digit numeric string (e.g., "482910")
+    // 6. Generate New Password: Create a secure 6-digit numeric string (e.g., "482910")
     // Using crypto.randomInt for cryptographically secure random number generation
     const newPassword = crypto.randomInt(100000, 999999).toString();
 
-    // 6. Hash Password: Hash this new password using bcrypt
+    // 7. Hash Password: Hash this new password using bcrypt
     // Note: The User model has a pre-save hook that automatically hashes passwords
     // We'll set the plain password and let the pre-save hook handle the hashing
     // This ensures consistency with the rest of the codebase
     user.password = newPassword;
     user.mustResetPassword = true;
     
-    // 7. Update User: Save the new password (will be hashed by pre-save hook) and cleared device fields
+    // 8. Update User: Save the new password (will be hashed by pre-save hook) and cleared device fields
     // Data Integrity: Updating credentials only. User history and profile data are preserved because _id remains unchanged.
     // Using user.save() ensures only modified fields are updated, preserving all other data
     await user.save();
 
-    // 8. Send Email: Email the user with the new temporary 6-digit PIN
+    // 9. Send Email: Email the user with the new temporary 6-digit PIN
     const emailSubject = 'Action Required: Device Reset & New Login PIN';
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -893,7 +925,7 @@ export const resetDevice = async (req: Request, res: Response) => {
       // The password was already reset, so we continue
     }
 
-    // 9. Return user object (excluding password) to confirm account still exists with all data intact
+    // 10. Return user object (excluding password) to confirm account still exists with all data intact
     // Fetch the updated user without password field to return in response
     const updatedUser = await UserCollection.findById(userId).select('-password');
     
@@ -924,7 +956,8 @@ export const deleteUser = async (req: Request, res: Response) => {
     return res.status(403).json({ msg: 'Only Super Admin can delete users' });
   }
 
-  // 2. Prevent SuperAdmin from deleting themselves
+  // 2. Prevent users from deleting themselves (applies to SuperAdmin and CompanyAdmin)
+  // This is a critical protection to prevent accidental self-deletion
   if (userId === requesterId) {
     return res.status(400).json({ msg: 'You cannot delete your own account' });
   }
