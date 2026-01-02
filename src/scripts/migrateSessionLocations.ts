@@ -48,35 +48,41 @@ async function migrateSessionLocations(): Promise<void> {
 
     // Process each organization
     for (const org of organizations) {
-      const collectionPrefix = org.prefix;
+      const collectionPrefix = org.collectionPrefix;
       console.log(`\n🔍 Processing organization: ${org.name} (${collectionPrefix})`);
 
       const SessionCollection = createSessionModel(`${collectionPrefix}_sessions`);
 
       // Find sessions that require location but are missing coordinates
       const sessions = await SessionCollection.find({
-        $or: [
-          { sessionType: 'PHYSICAL' },
-          { sessionType: 'HYBRID' },
-        ],
-        $or: [
-          // LINK type without coordinates
+        $and: [
           {
-            'location.type': 'LINK',
             $or: [
-              { 'location.geolocation': { $exists: false } },
-              { 'location.geolocation.latitude': { $exists: false } },
-              { 'location.geolocation.longitude': { $exists: false } },
-              { 'location.geolocation.latitude': null },
-              { 'location.geolocation.longitude': null },
+              { sessionType: 'PHYSICAL' },
+              { sessionType: 'HYBRID' },
             ],
-            'location.link': { $exists: true, $ne: '' },
           },
-          // Legacy: has location link but no geolocation
           {
-            location: { $exists: false },
-            geolocation: { $exists: false },
-            physicalLocation: { $exists: true, $ne: '' },
+            $or: [
+              // LINK type without coordinates
+              {
+                'location.type': 'LINK',
+                $or: [
+                  { 'location.geolocation': { $exists: false } },
+                  { 'location.geolocation.latitude': { $exists: false } },
+                  { 'location.geolocation.longitude': { $exists: false } },
+                  { 'location.geolocation.latitude': null },
+                  { 'location.geolocation.longitude': null },
+                ],
+                'location.link': { $exists: true, $ne: '' },
+              },
+              // Legacy: has location link but no geolocation
+              {
+                location: { $exists: false },
+                geolocation: { $exists: false },
+                physicalLocation: { $exists: true, $ne: '' },
+              },
+            ],
           },
         ],
       });
