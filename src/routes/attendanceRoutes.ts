@@ -18,7 +18,14 @@ router.post(
     check('deviceId', 'Device ID is required').not().isEmpty().trim(),
     check('userAgent', 'User Agent is required').not().isEmpty().trim(),
     check('accuracy', 'GPS accuracy is required').isFloat({ min: 0, max: 1000 }),
-    check('timestamp', 'Timestamp is required').optional().isISO8601(),
+    check('timestamp', 'Timestamp is required')
+      .custom((value) => {
+        // Timestamp must be a number (milliseconds since epoch)
+        if (typeof value !== 'number' || isNaN(value) || value <= 0) {
+          throw new Error('Timestamp must be a positive number (milliseconds)');
+        }
+        return true;
+      }),
   ],
   markAttendance
 );

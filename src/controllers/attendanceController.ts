@@ -107,6 +107,24 @@ export const markAttendance = async (req: Request, res: Response) => {
     });
   }
 
+  // STRICT VALIDATION: Timestamp is REQUIRED and must be a number (milliseconds)
+  if (typeof timestamp !== 'number' || isNaN(timestamp) || timestamp === undefined || timestamp === null) {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Missing or invalid timestamp');
+    return res.status(400).json({ 
+      msg: 'Timestamp is required. Please refresh the page and try again.',
+      reason: 'MISSING_TIMESTAMP'
+    });
+  }
+
+  // Validate timestamp is positive and reasonable (not too old, not in future)
+  if (timestamp <= 0) {
+    console.log('[ATTENDANCE_SCAN] REJECTED: Invalid timestamp (non-positive):', timestamp);
+    return res.status(400).json({ 
+      msg: 'Invalid timestamp. Please refresh the page and try again.',
+      reason: 'INVALID_TIMESTAMP'
+    });
+  }
+
   // STRICT BLOCK: Platform Owner cannot mark their own attendance
   if (role === 'PLATFORM_OWNER') {
     console.log('[ATTENDANCE_SCAN] REJECTED: Platform Owner attempted attendance');
