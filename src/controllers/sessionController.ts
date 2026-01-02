@@ -50,10 +50,48 @@ export const createSession = async (req: Request, res: Response) => {
         });
       }
       
+      // SECURITY: PHYSICAL sessions MUST have coordinates for distance validation
+      // LINK-only sessions cannot verify location - REJECT
+      let hasCoordinates = false;
+      
+      // Check if coordinates are provided in location.geolocation
+      if (location.geolocation && 
+          typeof location.geolocation.latitude === 'number' && 
+          typeof location.geolocation.longitude === 'number' &&
+          !isNaN(location.geolocation.latitude) &&
+          !isNaN(location.geolocation.longitude)) {
+        hasCoordinates = true;
+      }
+      
+      // Check legacy geolocation field
+      if (!hasCoordinates && geolocation && 
+          typeof geolocation.latitude === 'number' && 
+          typeof geolocation.longitude === 'number' &&
+          !isNaN(geolocation.latitude) &&
+          !isNaN(geolocation.longitude)) {
+        hasCoordinates = true;
+      }
+      
+      // BLOCK session creation if PHYSICAL and coordinates are missing
+      if (!hasCoordinates) {
+        return res.status(400).json({ 
+          msg: 'Location coordinates (latitude and longitude) are required for Physical sessions. Please provide coordinates or use the map picker to select a location.',
+          reason: 'MISSING_COORDINATES'
+        });
+      }
+      
+      // Validate location structure
       if (location.type === 'LINK') {
         if (!location.link || !location.link.trim()) {
           return res.status(400).json({ 
             msg: 'Location Link is required.' 
+          });
+        }
+        // LINK type is allowed, but coordinates MUST be present in geolocation field
+        if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {
+          return res.status(400).json({ 
+            msg: 'Location coordinates are required even when providing a Google Maps link. Please extract coordinates from the link or use the map picker.',
+            reason: 'MISSING_COORDINATES'
           });
         }
       } else if (location.type === 'COORDS') {
@@ -263,10 +301,47 @@ export const updateSession = async (req: Request, res: Response) => {
     if (sessionType && (finalSessionType === 'PHYSICAL' || finalSessionType === 'HYBRID')) {
       // For PHYSICAL or HYBRID sessions, location is required
       if (location) {
+        // SECURITY: PHYSICAL sessions MUST have coordinates for distance validation
+        // LINK-only sessions cannot verify location - REJECT
+        let hasCoordinates = false;
+        
+        // Check if coordinates are provided in location.geolocation
+        if (location.geolocation && 
+            typeof location.geolocation.latitude === 'number' && 
+            typeof location.geolocation.longitude === 'number' &&
+            !isNaN(location.geolocation.latitude) &&
+            !isNaN(location.geolocation.longitude)) {
+          hasCoordinates = true;
+        }
+        
+        // Check legacy geolocation field
+        if (!hasCoordinates && geolocation && 
+            typeof geolocation.latitude === 'number' && 
+            typeof geolocation.longitude === 'number' &&
+            !isNaN(geolocation.latitude) &&
+            !isNaN(geolocation.longitude)) {
+          hasCoordinates = true;
+        }
+        
+        // BLOCK session update if PHYSICAL and coordinates are missing
+        if (!hasCoordinates) {
+          return res.status(400).json({ 
+            msg: 'Location coordinates (latitude and longitude) are required for Physical sessions. Please provide coordinates or use the map picker to select a location.',
+            reason: 'MISSING_COORDINATES'
+          });
+        }
+        
         if (location.type === 'LINK') {
           if (!location.link || !location.link.trim()) {
             return res.status(400).json({ 
               msg: 'Location Link is required.' 
+            });
+          }
+          // LINK type is allowed, but coordinates MUST be present in geolocation field
+          if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {
+            return res.status(400).json({ 
+              msg: 'Location coordinates are required even when providing a Google Maps link. Please extract coordinates from the link or use the map picker.',
+              reason: 'MISSING_COORDINATES'
             });
           }
         } else if (location.type === 'COORDS') {

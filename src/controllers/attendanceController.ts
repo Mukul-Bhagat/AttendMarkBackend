@@ -452,7 +452,7 @@ export const markAttendance = async (req: Request, res: Response) => {
       if (!sessionLocation) {
         console.error('[ATTENDANCE_SCAN] REJECTED: Session location coordinates not configured - cannot verify distance');
         return res.status(400).json({
-          msg: 'Session location coordinates are not configured. Distance validation cannot be performed. Please contact the administrator.',
+          msg: 'This session does not have a verified location configured. Please contact the administrator.',
           reason: 'SESSION_LOCATION_NOT_CONFIGURED'
         });
       }
