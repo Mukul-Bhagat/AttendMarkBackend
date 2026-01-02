@@ -4,6 +4,7 @@ import createSessionModel from '../models/Session';
 import createClassBatchModel from '../models/ClassBatch';
 import { logAction } from '../utils/auditLogger';
 import Organization from '../models/Organization';
+import { extractCoordinatesFromGoogleMapsLink } from '../utils/mapsParser';
 
 // @route   POST /api/sessions
 // @desc    Create a new session
@@ -80,19 +81,31 @@ export const createSession = async (req: Request, res: Response) => {
         });
       }
       
-      // Validate location structure
+      // Validate location structure and extract coordinates if needed
       if (location.type === 'LINK') {
         if (!location.link || !location.link.trim()) {
           return res.status(400).json({ 
             msg: 'Location Link is required.' 
           });
         }
-        // LINK type is allowed, but coordinates MUST be present in geolocation field
+        
+        // AUTO-EXTRACT coordinates from Google Maps link if not provided
+        let extractedCoords: { latitude: number; longitude: number } | null = null;
         if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {
-          return res.status(400).json({ 
-            msg: 'Location coordinates are required even when providing a Google Maps link. Please extract coordinates from the link or use the map picker.',
-            reason: 'MISSING_COORDINATES'
-          });
+          extractedCoords = extractCoordinatesFromGoogleMapsLink(location.link.trim());
+          
+          if (!extractedCoords) {
+            return res.status(400).json({ 
+              msg: 'Could not extract coordinates from the Google Maps link. Please ensure the link contains coordinates (e.g., https://maps.google.com/?q=lat,lng) or provide coordinates manually.',
+              reason: 'MISSING_COORDINATES'
+            });
+          }
+          
+          // Auto-populate coordinates from extracted values
+          location.geolocation = {
+            latitude: extractedCoords.latitude,
+            longitude: extractedCoords.longitude,
+          };
         }
       } else if (location.type === 'COORDS') {
         if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {
@@ -337,12 +350,24 @@ export const updateSession = async (req: Request, res: Response) => {
               msg: 'Location Link is required.' 
             });
           }
-          // LINK type is allowed, but coordinates MUST be present in geolocation field
+          
+          // AUTO-EXTRACT coordinates from Google Maps link if not provided
+          let extractedCoords: { latitude: number; longitude: number } | null = null;
           if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {
-            return res.status(400).json({ 
-              msg: 'Location coordinates are required even when providing a Google Maps link. Please extract coordinates from the link or use the map picker.',
-              reason: 'MISSING_COORDINATES'
-            });
+            extractedCoords = extractCoordinatesFromGoogleMapsLink(location.link.trim());
+            
+            if (!extractedCoords) {
+              return res.status(400).json({ 
+                msg: 'Could not extract coordinates from the Google Maps link. Please ensure the link contains coordinates (e.g., https://maps.google.com/?q=lat,lng) or provide coordinates manually.',
+                reason: 'MISSING_COORDINATES'
+              });
+            }
+            
+            // Auto-populate coordinates from extracted values
+            location.geolocation = {
+              latitude: extractedCoords.latitude,
+              longitude: extractedCoords.longitude,
+            };
           }
         } else if (location.type === 'COORDS') {
           if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {

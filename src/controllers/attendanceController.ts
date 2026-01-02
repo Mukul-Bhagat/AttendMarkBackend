@@ -431,7 +431,12 @@ export const markAttendance = async (req: Request, res: Response) => {
       
       // Check new location structure first, then fall back to legacy geolocation
       if (session.location) {
-        if (session.location.type === 'COORDS' && session.location.geolocation) {
+        // For both LINK and COORDS types, check geolocation field
+        if (session.location.geolocation && 
+            typeof session.location.geolocation.latitude === 'number' &&
+            typeof session.location.geolocation.longitude === 'number' &&
+            !isNaN(session.location.geolocation.latitude) &&
+            !isNaN(session.location.geolocation.longitude)) {
           sessionLocation = {
             latitude: session.location.geolocation.latitude,
             longitude: session.location.geolocation.longitude,

@@ -600,6 +600,33 @@ describe('Attendance Controller - Security Tests', () => {
       expect(mockAttendanceInstance.save).not.toHaveBeenCalled();
       expect(mockGetDistance).toHaveBeenCalled(); // Distance check MUST be performed
     });
+
+    test('✅ LINK type session with coordinates and correct location → SUCCESS', async () => {
+      // Setup: LINK type session WITH coordinates at correct location
+      const linkSessionWithCoords = {
+        ...mockSessionInstance,
+        location: {
+          type: 'LINK',
+          link: 'https://maps.google.com/?q=28.6139,77.2090',
+          geolocation: {
+            latitude: 28.6139,
+            longitude: 77.2090,
+          },
+        },
+      };
+      ((mockSessionModel.findById as unknown as jest.Mock).mockResolvedValueOnce as any)(linkSessionWithCoords);
+      mockGetDistance.mockReturnValue(50); // Within radius
+
+      await markAttendance(mockRequest as unknown as Request, mockResponse as unknown as Response);
+
+      // Assertions - LINK type with coordinates should work if location is correct
+      expect(mockResponse.status).toHaveBeenCalledWith(201);
+      expect(mockAttendanceInstance.save).toHaveBeenCalledTimes(1);
+      expect(mockGetDistance).toHaveBeenCalledWith(
+        { latitude: 28.6139, longitude: 77.2090 },
+        { latitude: 28.6139, longitude: 77.2090 }
+      );
+    });
   });
 
   describe('🔒 SAFETY ASSERTIONS', () => {
