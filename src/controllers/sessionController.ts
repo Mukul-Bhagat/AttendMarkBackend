@@ -89,24 +89,25 @@ export const createSession = async (req: Request, res: Response) => {
           });
         }
         
-        // AUTO-EXTRACT coordinates from Google Maps link if not provided
+        // AUTO-RESOLVE coordinates from Google Maps link (follows redirects for short links)
+        // Frontend sends link only, backend resolves it ONCE and stores coordinates
         let extractedCoords: { latitude: number; longitude: number } | null = null;
-        if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {
-          extractedCoords = extractCoordinatesFromGoogleMapsLink(location.link.trim());
-          
-          if (!extractedCoords) {
-            return res.status(400).json({ 
-              msg: 'Could not extract coordinates from the Google Maps link. Please ensure the link contains coordinates (e.g., https://maps.google.com/?q=lat,lng) or provide coordinates manually.',
-              reason: 'MISSING_COORDINATES'
-            });
-          }
-          
-          // Auto-populate coordinates from extracted values
-          location.geolocation = {
-            latitude: extractedCoords.latitude,
-            longitude: extractedCoords.longitude,
-          };
+        
+        // Always resolve link to coordinates (even if frontend sent coordinates, we verify)
+        extractedCoords = await extractCoordinatesFromGoogleMapsLink(location.link.trim());
+        
+        if (!extractedCoords) {
+          return res.status(400).json({ 
+            msg: 'Could not extract coordinates from the Google Maps link. Please ensure the link is a valid Google Maps share link or provide coordinates manually.',
+            reason: 'MISSING_COORDINATES'
+          });
         }
+        
+        // Store ONLY verified coordinates (link is kept for display purposes only)
+        location.geolocation = {
+          latitude: extractedCoords.latitude,
+          longitude: extractedCoords.longitude,
+        };
       } else if (location.type === 'COORDS') {
         if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {
           return res.status(400).json({ 
@@ -351,24 +352,25 @@ export const updateSession = async (req: Request, res: Response) => {
             });
           }
           
-          // AUTO-EXTRACT coordinates from Google Maps link if not provided
+          // AUTO-RESOLVE coordinates from Google Maps link (follows redirects for short links)
+          // Frontend sends link only, backend resolves it ONCE and stores coordinates
           let extractedCoords: { latitude: number; longitude: number } | null = null;
-          if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {
-            extractedCoords = extractCoordinatesFromGoogleMapsLink(location.link.trim());
-            
-            if (!extractedCoords) {
-              return res.status(400).json({ 
-                msg: 'Could not extract coordinates from the Google Maps link. Please ensure the link contains coordinates (e.g., https://maps.google.com/?q=lat,lng) or provide coordinates manually.',
-                reason: 'MISSING_COORDINATES'
-              });
-            }
-            
-            // Auto-populate coordinates from extracted values
-            location.geolocation = {
-              latitude: extractedCoords.latitude,
-              longitude: extractedCoords.longitude,
-            };
+          
+          // Always resolve link to coordinates (even if frontend sent coordinates, we verify)
+          extractedCoords = await extractCoordinatesFromGoogleMapsLink(location.link.trim());
+          
+          if (!extractedCoords) {
+            return res.status(400).json({ 
+              msg: 'Could not extract coordinates from the Google Maps link. Please ensure the link is a valid Google Maps share link or provide coordinates manually.',
+              reason: 'MISSING_COORDINATES'
+            });
           }
+          
+          // Store ONLY verified coordinates (link is kept for display purposes only)
+          location.geolocation = {
+            latitude: extractedCoords.latitude,
+            longitude: extractedCoords.longitude,
+          };
         } else if (location.type === 'COORDS') {
           if (!location.geolocation || !location.geolocation.latitude || !location.geolocation.longitude) {
             return res.status(400).json({ 

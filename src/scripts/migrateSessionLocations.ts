@@ -120,8 +120,8 @@ async function migrateSessionLocations(): Promise<void> {
             continue;
           }
 
-          // Try to extract coordinates
-          const extractedCoords = extractCoordinatesFromGoogleMapsLink(linkToParse);
+          // Try to extract coordinates (async function)
+          const extractedCoords = await extractCoordinatesFromGoogleMapsLink(linkToParse);
 
           if (extractedCoords) {
             // Update session with extracted coordinates
